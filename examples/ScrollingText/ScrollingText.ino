@@ -1,6 +1,7 @@
 /*
  *    ScrollingText.ino - Scrolling text example using the Petduino library
- *    Copyright (c) 2015 Circuitbeard
+ *    Copyright (c) 2016 Circuitbeard
+ *    Portions contributed by Dan Fuhry <dan@fuhry.com>
  *
  *    Permission is hereby granted, free of charge, to any person
  *    obtaining a copy of this software and associated documentation
@@ -24,89 +25,86 @@
  *    OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include <avr/pgmspace.h> 
+#include <avr/pgmspace.h>
 #include <LedControl.h>
 #include <Petduino.h>
 #include "font_thin.h"
 
+#define CHAR_WIDTH 8
 #define CHAR_HEIGHT 8
-#define BUFFER_SIZE CHAR_HEIGHT*2
-#define SCROLL_SPEED 75
-#define MIN_CHAR 0x20
-#define MAX_CHAR 0x7f 
+#define TIMESTEP 35
 
-const unsigned char scrollText[] PROGMEM = {"HELLO WORLD #CIRCUITBEARD 2015  \0"}; // Make sure you have enough space on the end to fill the buffer and ensure all chars scroll across screen
-unsigned long charBuffer[BUFFER_SIZE] = {0};
+const char displaystr[] PROGMEM = { "HELLO WORLD #CIRCUITBEARD 2016  " };
+font_char_t glyph;
+byte buf[CHAR_HEIGHT];
+
+int charptr, colptr;
 
 Petduino pet = Petduino();
 
 void setup() {
-  
-  // Setup Petduino
   pet.begin();
-
+  charptr = colptr = 0;
 }
 
 void loop() {
+  int i;
+  int fontidx;
+  byte letter;
 
-  // Call pet loop
   pet.update();
+  
+  // shift every current column one pixel to the left, blanking
+  // the rightmost column
+  for (i = 0; i < CHAR_HEIGHT; i++) {
+    buf[i] <<= 1;
+  }
 
-  // Scroll message
-  scrollMessage(scrollText);
+  // which character are we working on?
+  letter = pgm_read_byte_near(&(displaystr[charptr]));
+  fontidx = letter - FONT_CHAR_BASE;
 
-}
+  // safety check, ensure we are not out of bounds
+  if (letter < FONT_CHAR_BASE || fontidx > sizeof(font)) {
+    // if out of bounds, print a space
+    letter = FONT_CHAR_BASE;
+  }
+  
+  // fetch glyph from program memory
+  for (i = 0; i < CHAR_HEIGHT; i++) {
+    glyph.glyph[i] = pgm_read_byte_near(&(font[fontidx].glyph[i]));
+  }
+  glyph.width = pgm_read_byte_near(&(font[fontidx].width));
 
-// Scroll Message
-void scrollMessage(const unsigned char *messageString) {
-    int counter = 0;
-    int myChar=0;
-    do {
-        // read back a char
-        myChar =  pgm_read_byte_near(messageString + counter);
-        if (myChar != 0){
-            loadCharIntoBuffer(myChar);
-        }
-        counter++;
+  // kerning data may instruct us to draw a character with a width
+  // of 9 px, but that's beyond the glyph buffer width so the logic
+  // here exists to draw blank columns when out of bounds from the
+  // glyph width.
+  if ( colptr < CHAR_WIDTH ) {
+    for (i = 0; i < CHAR_HEIGHT; i++) {
+      // shift the current column all the way to the right, compute
+      // a "1" or "0" and set the rightmost column on the display
+      // as appropriate.
+      buf[i] |= (glyph.glyph[i] >> (CHAR_WIDTH-1 - colptr)) & 1;
     }
-    while (myChar != 0);
-}
-
-// Load character into buffer
-void loadCharIntoBuffer(int ascii){
-  if (ascii >= MIN_CHAR && ascii <= MAX_CHAR){ 
-      for (int a=0; a<CHAR_HEIGHT; a++) {                      
-          unsigned long c = pgm_read_byte_near(font + ((ascii - 0x20) * (CHAR_HEIGHT+1)) + a);     // Index into character table to get row data
-          unsigned long x = charBuffer[a*2];     // Load current buffer value
-          x = x | c;                             // OR the new character onto end of current
-          charBuffer[a*2] = x;                   // Store back in buffer
-      }
-      byte count = pgm_read_byte_near(font +((ascii - 0x20) * (CHAR_HEIGHT+1)) + CHAR_HEIGHT);     // Index into character table for kerning data
-      for (byte x=0; x<count;x++){
-          rotateBuffer();
-          drawBuffer();
-          delay(SCROLL_SPEED);
-      }
   }
-}
 
-// Rotate the buffer
-void rotateBuffer(){
-  for (int a=0;a<CHAR_HEIGHT;a++){         // Loop each row in char
-    unsigned long x = charBuffer[a*2];     // Get low buffer entry
-    byte b = bitRead(x,31);                // Copy high order bit that gets lost in rotation
-    x = x<<1;                              // Rotate left one bit
-    charBuffer[a*2] = x;                   // Store new low buffer
-    x = charBuffer[a*2+1];                 // Get high buffer entry
-    x = x<<1;                              // Rotate left one bit
-    bitWrite(x,0,b);                       // Store saved bit
-    charBuffer[a*2+1] = x;                 // Store new high buffer
-  }
-}
+  // increment column pointer
+  ++colptr;
 
-// Display Buffer on screen
-void drawBuffer(){
-  for (int a=0; a<CHAR_HEIGHT; a++){        // Loop each row in char
-    pet.drawRow(a, charBuffer[a*2+1]);      // Send row to screen
+  // if we've exceeded the width of this glyph, move on to the next
+  // one
+  if (colptr >= glyph.width) {
+    colptr = 0;
+    ++charptr;
   }
+
+  // if we've reached the end of the string, reset to the beginning
+  if (charptr == strlen_P(displaystr)) {
+    charptr = 0;
+  }
+
+  // end draw code, display image and move on to the next iteration
+  pet.drawImage(buf);
+  delay(TIMESTEP);
 }
